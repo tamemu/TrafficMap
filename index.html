@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>リアルタイム交通マップ (TomTom API)</title>
+<link href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" rel="stylesheet">
+<style>
+  :root { color-scheme: light dark; }
+  html, body, #map { height: 100%; margin: 0; }
+  .topbar {
+    position: absolute; inset: 8px 8px auto 8px; z-index: 1000;
+    background: rgba(0,0,0,.65); color:#fff; padding:10px 12px; border-radius:12px;
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, "Noto Sans JP", sans-serif;
+    backdrop-filter: blur(6px);
+  }
+  .topbar h1 { font-size: 16px; margin: 0 0 6px; font-weight: 700; }
+  .controls { display: grid; grid-template-columns: auto auto; gap: 6px 12px; align-items: center; }
+  .badge { font-size: 12px; opacity: .9 }
+  .legend { display:flex; gap:8px; margin-top:6px; align-items:center; flex-wrap:wrap; }
+  .chip { width:18px; height:8px; border-radius: 4px; display:inline-block; }
+  .chip.green{ background:#2ecc71;}
+  .chip.orange{ background:#f1c40f;}
+  .chip.red{ background:#e74c3c;}
+  .leaflet-popup-content { font-family: system-ui, -apple-system, "Noto Sans JP", sans-serif; }
+  .locate-btn { cursor:pointer; padding:6px 10px; border-radius:10px; border:1px solid #fff3; background:#fff1; color:#fff; }
+  .locate-btn:active { transform: scale(0.98); }
+</style>
+</head>
+<body>
+<div id="map"></div>
+
+<div class="topbar">
+  <h1>リアルタイム交通マップ</h1>
+  <div class="controls">
+    <label><input id="flowToggle" type="checkbox" checked> 渋滞レイヤ（Flow）</label>
+    <label><input id="incToggle" type="checkbox" checked> 事故・工事（Incidents）</label>
+    <button id="locateBtn" class="locate-btn">現在地へ移動</button>
+    <div class="badge" id="lastUpdate">最終更新: —</div>
+  </div>
+  <div class="legend">
+    <span class="chip green"></span>スムーズ（相対速度 高）
+    <span class="chip orange"></span>やや混雑
+    <span class="chip red"></span>渋滞
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+/** ====== 設定 ====== **/
+const TOMTOM_API_KEY = 'YOUR_TOMTOM_API_KEY'; // ←差し替え
+const START_POS = [35.6812, 139.7671]; // 東京駅
+const START_ZOOM = 12;
+const REFRESH_MS = 60_000; // 1分ごと自動更新
+
+/** ====== 地図 ====== **/
+const map = L.map('map', { zoomControl: true }).setView(START_POS, START_ZOOM);
+const base = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution:'© OpenStreetMap'
+}).addTo(map);
+
+// TomTom 交通ラスタタイル（Flow: relative0 = 相対速度）
+const flowTiles = L.tileLayer(
+  `https://api.tomtom.com/traffic/map/4/tile/flow/relative0/{z}/{x}/{y}.png?tileSize=256&key=${TOMTOM_API_KEY}`,
+  { opacity: 0.9, zIndex: 500 }
+).addTo(map);
+
+// TomTom インシデント（事故・工事など）
+const incidentTiles = L.tileLayer(
+  `https://api.tomtom.com/traffic/map/4/tile/incidents/{z}/{x}/{y}.png?tileSize=256&key=${TOMTOM_API_KEY}`,
+  { opacity: 0.9, zIndex: 600 }
+).addTo(map);
+
+// レイヤトグル（UIチェックボックスと連動）
+const flowToggle = document.getElementById('flowToggle');
+const incToggle  = document.getElementById('incToggle');
+flowToggle.addEventListener('change', () => flowToggle.checked ? flowTiles.addTo(map) : map.removeLayer(flowTiles));
+incToggle.addEventListener('change',  () => incToggle.checked  ? incidentTiles.addTo(map) : map.removeLayer(incidentTiles));
+
+// 自動更新（タイルのキャッシュバスティング：.setUrlでダミーQS付与）
+function refreshTiles(){
+  const bust = `&_t=${Date.now()}`;
+  if (map.hasLayer(flowTiles))     flowTiles.setUrl(`https://api.tomtom.com/traffic/map/4/tile/flow/relative0/{z}/{x}/{y}.png?tileSize=256&key=${TOMTOM_API_KEY}${bust}`);
+  if (map.hasLayer(incidentTiles)) incidentTiles.setUrl(`https://api.tomtom.com/traffic/map/4/tile/incidents/{z}/{x}/{y}.png?tileSize=256&key=${TOMTOM_API_KEY}${bust}`);
+  // 最終更新表示
+  document.getElementById('lastUpdate').textContent = '最終更新: ' + new Date().toLocaleTimeString();
+}
+refreshTiles();
+setInterval(refreshTiles, REFRESH_MS);
+
+// 現在地へ移動
+document.getElementById('locateBtn').onclick = () => {
+  if (!navigator.geolocation) return alert('この端末は位置情報に対応していません。');
+  navigator.geolocation.getCurrentPosition(
+    pos => map.setView([pos.coords.latitude, pos.coords.longitude], 14),
+    err => alert('現在地を取得できませんでした: ' + err.message),
+    { enableHighAccuracy:true, maximumAge:10000, timeout:10000 }
+  );
+};
+
+// クリック地点の区間詳細（Flow Segment Data）
+let busy = false;
+map.on('click', async (e) => {
+  if (busy) return;
+  busy = true;
+  const { lat, lng } = e.latlng;
+
+  // absolute=実速度系 / relative0=相対速度系（必要に応じて切替）
+  const url = new URL('https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json');
+  url.searchParams.set('point', `${lat},${lng}`);
+  url.searchParams.set('key', TOMTOM_API_KEY);
+
+  try {
+    const res = await fetch(url.toString());
+    if (!res.ok) throw new Error('API error ' + res.status);
+    const data = await res.json();
+
+    const f = data && data.flowSegmentData;
+    if (!f) throw new Error('No segment data');
+
+    // 代表値
+    const curSpeed = f.currentSpeed;         // km/h
+    const freeFlow = f.freeFlowSpeed;        // km/h
+    const curTT    = f.currentTravelTime;    // 秒
+    const ffreeTT  = f.freeFlowTravelTime;   // 秒
+    const conf     = f.confidence ?? f.confidence ?? 0; // 0..1
+
+    const html = `
+      <b>区間の交通状況</b><br>
+      現在速度: <b>${curSpeed?.toFixed?.(0) ?? curSpeed} km/h</b><br>
+      自由流速度: ${freeFlow} km/h<br>
+      旅行時間(現在): ${Math.round(curTT)} 秒<br>
+      旅行時間(自由流): ${Math.round(ffreeTT)} 秒<br>
+      信頼度: ${(conf*100).toFixed(0)}%
+    `;
+
+    L.popup()
+      .setLatLng([lat, lng])
+      .setContent(html)
+      .openOn(map);
+  } catch (err) {
+    console.error(err);
+    L.popup()
+      .setLatLng([lat, lng])
+      .setContent('区間データを取得できませんでした。ズームを上げて道路上をクリックしてください。')
+      .openOn(map);
+  } finally {
+    busy = false;
+  }
+});
+</script>
+</body>
+</html>
