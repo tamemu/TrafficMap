@@ -16,15 +16,18 @@
   }
   .topbar h1 { font-size: 16px; margin: 0 0 6px; font-weight: 700; }
   .controls { display: grid; grid-template-columns: auto auto; gap: 6px 12px; align-items: center; }
-  .badge { font-size: 12px; opacity: .9 }
   .legend { display:flex; gap:8px; margin-top:6px; align-items:center; flex-wrap:wrap; }
   .chip { width:18px; height:8px; border-radius: 4px; display:inline-block; }
   .chip.green{ background:#2ecc71;}
   .chip.orange{ background:#f1c40f;}
   .chip.red{ background:#e74c3c;}
   .leaflet-popup-content { font-family: system-ui, -apple-system, "Noto Sans JP", sans-serif; }
-  .locate-btn { cursor:pointer; padding:6px 10px; border-radius:10px; border:1px solid #fff3; background:#fff1; color:#fff; }
-  .locate-btn:active { transform: scale(0.98); }
+  .btn { cursor:pointer; padding:6px 10px; border-radius:10px; border:1px solid #fff3; background:#fff1; color:#fff; }
+  .btn:active { transform: scale(0.98); }
+  .status { font-size:12px; opacity:.9 }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  select, input[type="checkbox"] { cursor:pointer; }
+  .error { color:#ffb3b3; font-size:12px; margin-top:4px; display:none; }
 </style>
 </head>
 <body>
@@ -33,13 +36,31 @@
 <div class="topbar">
   <h1>リアルタイム交通マップ</h1>
   <div class="controls">
-    <label><input id="flowToggle" type="checkbox" checked> 渋滞レイヤ（Flow）</label>
-    <label><input id="incToggle" type="checkbox" checked> 事故・工事（Incidents）</label>
-    <button id="locateBtn" class="locate-btn">現在地へ移動</button>
-    <div class="badge" id="lastUpdate">最終更新: —</div>
+    <div class="row">
+      <label><input id="flowToggle" type="checkbox" checked> 渋滞レイヤ（Flow）</label>
+      <label><input id="incToggle" type="checkbox" checked> 事故・工事（Incidents）</label>
+    </div>
+    <div class="row">
+      <label>更新頻度:
+        <select id="refreshSelect">
+          <option value="15000">15秒</option>
+          <option value="30000">30秒</option>
+          <option value="60000" selected>60秒</option>
+          <option value="120000">2分</option>
+          <option value="300000">5分</option>
+        </select>
+      </label>
+      <button id="refreshBtn" class="btn">今すぐ更新</button>
+      <span class="status" id="lastUpdate">最終更新: —</span>
+    </div>
+    <div class="row">
+      <button id="locateOnceBtn" class="btn">現在地へ移動</button>
+      <label><input id="followMeToggle" type="checkbox"> 自位置を表示して追従</label>
+    </div>
+    <div id="helpErr" class="error"></div>
   </div>
   <div class="legend">
-    <span class="chip green"></span>スムーズ（相対速度 高）
+    <span class="chip green"></span>スムーズ
     <span class="chip orange"></span>やや混雑
     <span class="chip red"></span>渋滞
   </div>
@@ -48,10 +69,9 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 /** ====== 設定 ====== **/
-const TOMTOM_API_KEY = '24HrSHbW35I1zbVqguZIRu7bshge5PTm'; // ←差し替え
+const TOMTOM_API_KEY = 'YOUR_TOMTOM_API_KEY'; // ←差し替え（Traffic権限のあるキー）
 const START_POS = [35.6812, 139.7671]; // 東京駅
 const START_ZOOM = 12;
-const REFRESH_MS = 60_000; // 1分ごと自動更新
 
 /** ====== 地図 ====== **/
 const map = L.map('map', { zoomControl: true }).setView(START_POS, START_ZOOM);
@@ -59,53 +79,138 @@ const base = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   attribution:'© OpenStreetMap'
 }).addTo(map);
 
-// TomTom 交通ラスタタイル（Flow: relative0 = 相対速度）
-const flowTiles = L.tileLayer(
-  `https://api.tomtom.com/traffic/map/4/tile/flow/relative0/{z}/{x}/{y}.png?tileSize=256&key=${TOMTOM_API_KEY}`,
-  { opacity: 0.9, zIndex: 500 }
-).addTo(map);
+// TomTom ラスタタイル（Flow/Incidents）
+const FLOW_URL = `https://api.tomtom.com/traffic/map/4/tile/flow/relative0/{z}/{x}/{y}.png?tileSize=256&key=${TOMTOM_API_KEY}`;
+const INC_URL  = `https://api.tomtom.com/traffic/map/4/tile/incidents/{z}/{x}/{y}.png?tileSize=256&key=${TOMTOM_API_KEY}`;
+const flowTiles = L.tileLayer(FLOW_URL, { opacity: 0.9, zIndex: 500 }).addTo(map);
+const incidentTiles = L.tileLayer(INC_URL, { opacity: 0.9, zIndex: 600 }).addTo(map);
 
-// TomTom インシデント（事故・工事など）
-const incidentTiles = L.tileLayer(
-  `https://api.tomtom.com/traffic/map/4/tile/incidents/{z}/{x}/{y}.png?tileSize=256&key=${TOMTOM_API_KEY}`,
-  { opacity: 0.9, zIndex: 600 }
-).addTo(map);
-
-// レイヤトグル（UIチェックボックスと連動）
+// トグル
 const flowToggle = document.getElementById('flowToggle');
 const incToggle  = document.getElementById('incToggle');
 flowToggle.addEventListener('change', () => flowToggle.checked ? flowTiles.addTo(map) : map.removeLayer(flowTiles));
 incToggle.addEventListener('change',  () => incToggle.checked  ? incidentTiles.addTo(map) : map.removeLayer(incidentTiles));
 
-// 自動更新（タイルのキャッシュバスティング：.setUrlでダミーQS付与）
-function refreshTiles(){
-  const bust = `&_t=${Date.now()}`;
-  if (map.hasLayer(flowTiles))     flowTiles.setUrl(`https://api.tomtom.com/traffic/map/4/tile/flow/relative0/{z}/{x}/{y}.png?tileSize=256&key=${TOMTOM_API_KEY}${bust}`);
-  if (map.hasLayer(incidentTiles)) incidentTiles.setUrl(`https://api.tomtom.com/traffic/map/4/tile/incidents/{z}/{x}/{y}.png?tileSize=256&key=${TOMTOM_API_KEY}${bust}`);
-  // 最終更新表示
-  document.getElementById('lastUpdate').textContent = '最終更新: ' + new Date().toLocaleTimeString();
-}
-refreshTiles();
-setInterval(refreshTiles, REFRESH_MS);
+/** ====== タイル更新（キャッシュバスティング付き） ====== **/
+const lastUpdateEl = document.getElementById('lastUpdate');
+const helpErrEl = document.getElementById('helpErr');
 
-// 現在地へ移動
-document.getElementById('locateBtn').onclick = () => {
+function setErr(msg) {
+  helpErrEl.textContent = msg;
+  helpErrEl.style.display = msg ? 'block' : 'none';
+}
+
+async function pingKey() {
+  // 軽い疎通: flowSegmentData で道路外クリック時も 200/エラーが分かる
+  try {
+    const testUrl = new URL('https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json');
+    testUrl.searchParams.set('point', `${START_POS[0]},${START_POS[1]}`);
+    testUrl.searchParams.set('key', TOMTOM_API_KEY);
+    const res = await fetch(testUrl.toString());
+    if (res.status === 401 || res.status === 403) {
+      setErr('APIキーが無効、またはTraffic権限がありません（TomTomダッシュボードで「Traffic」製品が有効か確認してください）。');
+    } else if (!res.ok) {
+      setErr('TomTom API応答がエラーです（' + res.status + '）。ネットワーク・レート制限をご確認ください。');
+    } else {
+      setErr('');
+    }
+  } catch (e) {
+    setErr('ネットワークに到達できません。CORS/ネットワーク設定をご確認ください。');
+  }
+}
+
+function refreshTiles(){
+  const bust = `&_t=${Date.now()}`; // 強制キャッシュ無効化
+  if (map.hasLayer(flowTiles))     flowTiles.setUrl(FLOW_URL + bust);
+  if (map.hasLayer(incidentTiles)) incidentTiles.setUrl(INC_URL  + bust);
+  lastUpdateEl.textContent = '最終更新: ' + new Date().toLocaleTimeString();
+}
+
+// 更新頻度の選択
+const refreshSelect = document.getElementById('refreshSelect');
+let refreshTimer = null;
+function applyInterval() {
+  if (refreshTimer) clearInterval(refreshTimer);
+  const ms = parseInt(refreshSelect.value, 10);
+  refreshTimer = setInterval(refreshTiles, ms);
+}
+document.getElementById('refreshBtn').onclick = refreshTiles;
+refreshSelect.onchange = applyInterval;
+
+// 初期実行
+refreshTiles();
+applyInterval();
+pingKey();
+
+/** ====== 現在地表示（追従オプション） ====== **/
+const locateOnceBtn = document.getElementById('locateOnceBtn');
+const followMeToggle = document.getElementById('followMeToggle');
+
+let watchId = null;
+let meMarker = null;
+let meCircle = null;
+
+function updateMe(lat, lng, acc){
+  const ll = [lat, lng];
+  if (!meMarker) {
+    meMarker = L.marker(ll, { title: 'あなたの現在地' }).addTo(map);
+  } else {
+    meMarker.setLatLng(ll);
+  }
+  if (!meCircle) {
+    meCircle = L.circle(ll, { radius: acc || 30, color:'#4aa3ff', fillColor:'#4aa3ff', fillOpacity:0.15 }).addTo(map);
+  } else {
+    meCircle.setLatLng(ll).setRadius(acc || 30);
+  }
+}
+
+locateOnceBtn.onclick = () => {
   if (!navigator.geolocation) return alert('この端末は位置情報に対応していません。');
   navigator.geolocation.getCurrentPosition(
-    pos => map.setView([pos.coords.latitude, pos.coords.longitude], 14),
+    pos => {
+      const { latitude, longitude, accuracy } = pos.coords;
+      updateMe(latitude, longitude, accuracy);
+      map.setView([latitude, longitude], 14);
+    },
     err => alert('現在地を取得できませんでした: ' + err.message),
     { enableHighAccuracy:true, maximumAge:10000, timeout:10000 }
   );
 };
 
-// クリック地点の区間詳細（Flow Segment Data）
+followMeToggle.addEventListener('change', () => {
+  if (followMeToggle.checked) {
+    if (!navigator.geolocation) {
+      alert('この端末は位置情報に対応していません。');
+      followMeToggle.checked = false;
+      return;
+    }
+    watchId = navigator.geolocation.watchPosition(
+      pos => {
+        const { latitude, longitude, accuracy } = pos.coords;
+        updateMe(latitude, longitude, accuracy);
+        map.setView([latitude, longitude], Math.max(map.getZoom(), 14));
+      },
+      err => {
+        alert('現在地を追従できません: ' + err.message);
+        followMeToggle.checked = false;
+      },
+      { enableHighAccuracy:true, maximumAge:8000, timeout:10000 }
+    );
+  } else {
+    if (watchId !== null) {
+      navigator.geolocation.clearWatch(watchId);
+      watchId = null;
+    }
+  }
+});
+
+/** ====== クリックで区間詳細（おまけ：動作確認にも使える） ====== **/
 let busy = false;
 map.on('click', async (e) => {
   if (busy) return;
   busy = true;
   const { lat, lng } = e.latlng;
 
-  // absolute=実速度系 / relative0=相対速度系（必要に応じて切替）
   const url = new URL('https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json');
   url.searchParams.set('point', `${lat},${lng}`);
   url.searchParams.set('key', TOMTOM_API_KEY);
@@ -118,12 +223,11 @@ map.on('click', async (e) => {
     const f = data && data.flowSegmentData;
     if (!f) throw new Error('No segment data');
 
-    // 代表値
-    const curSpeed = f.currentSpeed;         // km/h
-    const freeFlow = f.freeFlowSpeed;        // km/h
-    const curTT    = f.currentTravelTime;    // 秒
-    const ffreeTT  = f.freeFlowTravelTime;   // 秒
-    const conf     = f.confidence ?? f.confidence ?? 0; // 0..1
+    const curSpeed = f.currentSpeed;
+    const freeFlow = f.freeFlowSpeed;
+    const curTT    = f.currentTravelTime;
+    const ffreeTT  = f.freeFlowTravelTime;
+    const conf     = f.confidence ?? 0;
 
     const html = `
       <b>区間の交通状況</b><br>
@@ -133,16 +237,12 @@ map.on('click', async (e) => {
       旅行時間(自由流): ${Math.round(ffreeTT)} 秒<br>
       信頼度: ${(conf*100).toFixed(0)}%
     `;
-
-    L.popup()
-      .setLatLng([lat, lng])
-      .setContent(html)
-      .openOn(map);
+    L.popup().setLatLng([lat, lng]).setContent(html).openOn(map);
   } catch (err) {
     console.error(err);
     L.popup()
       .setLatLng([lat, lng])
-      .setContent('区間データを取得できませんでした。ズームを上げて道路上をクリックしてください。')
+      .setContent('区間データ取得失敗。道路上をズームしてクリック、またはAPIキー権限をご確認ください。')
       .openOn(map);
   } finally {
     busy = false;
