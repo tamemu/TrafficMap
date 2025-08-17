@@ -69,7 +69,7 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 /** ====== 設定 ====== **/
-const TOMTOM_API_KEY = '24HrSHbW35I1zbVqguZIRu7bshge5PTm'; // ←差し替え（Traffic権限のあるキー）
+const TOMTOM_API_KEY = '95nUvWfM7ARBG60JdI3I37jG8N9yU9M4'; // ←差し替え（Traffic権限のあるキー）
 const START_POS = [35.6812, 139.7671]; // 東京駅
 const START_ZOOM = 12;
 
@@ -114,6 +114,7 @@ function applyInterval() {
   const ms = parseInt(refreshSelect.value, 10);
   refreshTimer = setInterval(refreshTiles, ms);
 }
+
 document.getElementById('refreshBtn').onclick = refreshTiles;
 refreshSelect.onchange = applyInterval;
 
@@ -122,10 +123,11 @@ refreshTiles();
 applyInterval();
 pingKey();
 
-/** ====== 疎通チェック（修正版） ====== **/
+/** ====== 疎通チェック（ズーム連動 & 詳細エラー表示） ====== **/
 async function pingKey() {
   try {
-    const testUrl = new URL('https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json');
+    const z = Math.max(0, Math.min(22, Math.round(map.getZoom() || 14)));
+    const testUrl = new URL(`https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/${z}/json`);
     testUrl.searchParams.set('point', `${START_POS[0]},${START_POS[1]}`); // lat,lng
     testUrl.searchParams.set('key', TOMTOM_API_KEY);
 
@@ -209,14 +211,15 @@ followMeToggle.addEventListener('change', () => {
   }
 });
 
-/** ====== クリックで区間詳細（デバッグにも使える） ====== **/
+/** ====== クリックで区間詳細（ズーム連動 & 詳細エラー表示） ====== **/
 let busy = false;
 map.on('click', async (e) => {
   if (busy) return;
   busy = true;
   const { lat, lng } = e.latlng;
 
-  const url = new URL('https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json');
+  const z = Math.max(0, Math.min(22, Math.round(map.getZoom() || 14)));
+  const url = new URL(`https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/${z}/json`);
   url.searchParams.set('point', `${lat},${lng}`);
   url.searchParams.set('key', TOMTOM_API_KEY);
 
