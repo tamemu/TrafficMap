@@ -27,7 +27,7 @@
   .status { font-size:12px; opacity:.9 }
   .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
   select, input[type="checkbox"] { cursor:pointer; }
-  .error { color:#ffb3b3; font-size:12px; margin-top:4px; display:none; }
+  .error { color:#ffb3b3; font-size:12px; margin-top:4px; display:none; max-width: 420px; }
 </style>
 </head>
 <body>
@@ -75,7 +75,7 @@ const START_ZOOM = 12;
 
 /** ====== 地図 ====== **/
 const map = L.map('map', { zoomControl: true }).setView(START_POS, START_ZOOM);
-const base = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   attribution:'© OpenStreetMap'
 }).addTo(map);
 
@@ -91,51 +91,20 @@ const incToggle  = document.getElementById('incToggle');
 flowToggle.addEventListener('change', () => flowToggle.checked ? flowTiles.addTo(map) : map.removeLayer(flowTiles));
 incToggle.addEventListener('change',  () => incToggle.checked  ? incidentTiles.addTo(map) : map.removeLayer(incidentTiles));
 
-/** ====== タイル更新（キャッシュバスティング付き） ====== **/
+/** ====== タイル更新（キャッシュバスターは使わず redraw） ====== **/
 const lastUpdateEl = document.getElementById('lastUpdate');
 const helpErrEl = document.getElementById('helpErr');
 
 function setErr(msg) {
-  helpErrEl.textContent = msg;
+  helpErrEl.textContent = msg || '';
   helpErrEl.style.display = msg ? 'block' : 'none';
 }
 
-async function pingKey() {
-  // 軽い疎通: flowSegmentData で道路外クリック時も 200/エラーが分かる
-  try {
-    const testUrl = new URL('https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json');
-    testUrl.searchParams.set('point', `${START_POS[0]},${START_POS[1]}`);
-    testUrl.searchParams.set('key', TOMTOM_API_KEY);
-     const res = await fetch(url.toString());
- if (!res.ok) throw new Error('API error ' + res.status);
- const res = await fetch(url.toString());
- if (!res.ok) {
-   let msg = 'API error ' + res.status;
-   try {
-     const err = await res.json();
-     if (err?.detailedError?.message) msg += ' - ' + err.detailedError.message;
-     else if (err?.error) msg += ' - ' + err.error;
-   } catch {}
-   throw new Error(msg);
- }
-
-  } catch (e) {
-    setErr('ネットワークに到達できません。CORS/ネットワーク設定をご確認ください。');
-  }
+function refreshTiles(){
+  if (map.hasLayer(flowTiles))     flowTiles.redraw();
+  if (map.hasLayer(incidentTiles)) incidentTiles.redraw();
+  lastUpdateEl.textContent = '最終更新: ' + new Date().toLocaleTimeString();
 }
-
- function refreshTiles(){
-   const bust = `&_t=${Date.now()}`;
-   if (map.hasLayer(flowTiles))     flowTiles.setUrl(FLOW_URL + bust);
-   if (map.hasLayer(incidentTiles)) incidentTiles.setUrl(INC_URL  + bust);
-   lastUpdateEl.textContent = '最終更新: ' + new Date().toLocaleTimeString();
- }
- function refreshTiles(){
-   if (map.hasLayer(flowTiles))     flowTiles.redraw();
-   if (map.hasLayer(incidentTiles)) incidentTiles.redraw();
-   lastUpdateEl.textContent = '最終更新: ' + new Date().toLocaleTimeString();
- }
-
 
 // 更新頻度の選択
 const refreshSelect = document.getElementById('refreshSelect');
@@ -152,6 +121,31 @@ refreshSelect.onchange = applyInterval;
 refreshTiles();
 applyInterval();
 pingKey();
+
+/** ====== 疎通チェック（修正版） ====== **/
+async function pingKey() {
+  try {
+    const testUrl = new URL('https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json');
+    testUrl.searchParams.set('point', `${START_POS[0]},${START_POS[1]}`); // lat,lng
+    testUrl.searchParams.set('key', TOMTOM_API_KEY);
+
+    const res = await fetch(testUrl.toString());
+
+    if (!res.ok) {
+      let msg = `TomTom APIエラー ${res.status}`;
+      try {
+        const err = await res.json();
+        if (err?.detailedError?.message) msg += ` - ${err.detailedError.message}`;
+        else if (err?.error) msg += ` - ${err.error}`;
+      } catch { /* 本文がJSONでない場合あり */ }
+      setErr(msg);
+      return;
+    }
+    setErr('');
+  } catch (e) {
+    setErr('ネットワークに到達できません。CORS/ネットワーク設定をご確認ください。');
+  }
+}
 
 /** ====== 現在地表示（追従オプション） ====== **/
 const locateOnceBtn = document.getElementById('locateOnceBtn');
@@ -215,7 +209,7 @@ followMeToggle.addEventListener('change', () => {
   }
 });
 
-/** ====== クリックで区間詳細（おまけ：動作確認にも使える） ====== **/
+/** ====== クリックで区間詳細（デバッグにも使える） ====== **/
 let busy = false;
 map.on('click', async (e) => {
   if (busy) return;
@@ -228,7 +222,15 @@ map.on('click', async (e) => {
 
   try {
     const res = await fetch(url.toString());
-    if (!res.ok) throw new Error('API error ' + res.status);
+    if (!res.ok) {
+      let msg = `API error ${res.status}`;
+      try {
+        const err = await res.json();
+        if (err?.detailedError?.message) msg += ` - ${err.detailedError.message}`;
+        else if (err?.error) msg += ` - ${err.error}`;
+      } catch {}
+      throw new Error(msg);
+    }
     const data = await res.json();
 
     const f = data && data.flowSegmentData;
@@ -253,7 +255,7 @@ map.on('click', async (e) => {
     console.error(err);
     L.popup()
       .setLatLng([lat, lng])
-      .setContent('区間データ取得失敗。道路上をズームしてクリック、またはAPIキー権限をご確認ください。')
+      .setContent('区間データ取得失敗。道路上をズームしてクリック、またはAPIキー権限/リージョンをご確認ください。<br><small>'+String(err)+'</small>')
       .openOn(map);
   } finally {
     busy = false;
