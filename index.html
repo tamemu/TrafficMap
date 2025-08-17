@@ -106,25 +106,36 @@ async function pingKey() {
     const testUrl = new URL('https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json');
     testUrl.searchParams.set('point', `${START_POS[0]},${START_POS[1]}`);
     testUrl.searchParams.set('key', TOMTOM_API_KEY);
-    const res = await fetch(testUrl.toString());
-    if (res.status === 401 || res.status === 403) {
-      setErr('APIキーが無効、またはTraffic権限がありません（TomTomダッシュボードで「Traffic」製品が有効か確認してください）。');
-    } else if (!res.ok) {
-      setErr('TomTom API応答がエラーです（' + res.status + '）。ネットワーク・レート制限をご確認ください。');
-    } else {
-      setErr('');
-    }
+     const res = await fetch(url.toString());
+ if (!res.ok) throw new Error('API error ' + res.status);
+ const res = await fetch(url.toString());
+ if (!res.ok) {
+   let msg = 'API error ' + res.status;
+   try {
+     const err = await res.json();
+     if (err?.detailedError?.message) msg += ' - ' + err.detailedError.message;
+     else if (err?.error) msg += ' - ' + err.error;
+   } catch {}
+   throw new Error(msg);
+ }
+
   } catch (e) {
     setErr('ネットワークに到達できません。CORS/ネットワーク設定をご確認ください。');
   }
 }
 
-function refreshTiles(){
-  const bust = `&_t=${Date.now()}`; // 強制キャッシュ無効化
-  if (map.hasLayer(flowTiles))     flowTiles.setUrl(FLOW_URL + bust);
-  if (map.hasLayer(incidentTiles)) incidentTiles.setUrl(INC_URL  + bust);
-  lastUpdateEl.textContent = '最終更新: ' + new Date().toLocaleTimeString();
-}
+ function refreshTiles(){
+   const bust = `&_t=${Date.now()}`;
+   if (map.hasLayer(flowTiles))     flowTiles.setUrl(FLOW_URL + bust);
+   if (map.hasLayer(incidentTiles)) incidentTiles.setUrl(INC_URL  + bust);
+   lastUpdateEl.textContent = '最終更新: ' + new Date().toLocaleTimeString();
+ }
+ function refreshTiles(){
+   if (map.hasLayer(flowTiles))     flowTiles.redraw();
+   if (map.hasLayer(incidentTiles)) incidentTiles.redraw();
+   lastUpdateEl.textContent = '最終更新: ' + new Date().toLocaleTimeString();
+ }
+
 
 // 更新頻度の選択
 const refreshSelect = document.getElementById('refreshSelect');
