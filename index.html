@@ -70,7 +70,7 @@
 <script>
 const TOMTOM_API_KEY = '95nUvWfM7ARBG60JdI3I37jG8N9yU9M4';
 const START_POS = [35.6812, 139.7671];
-const START_ZOOM = 15; // さらに命中率UPのため初期ズームを上げる
+const START_ZOOM = 16; // さらに命中率UPのため初期ズームを上げる
 
 const map = L.map('map', { zoomControl: true }).setView(START_POS, START_ZOOM);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -123,12 +123,12 @@ async function tryFlowAt(lat, lng, z){
 }
 
 function* nearbyOffsetsMeters(){
-  // 同心円 + 16方位（22.5°刻み）で最大 ~250m まで探索
-  const radii = [0,15,30,50,75,100,150,200,250]; // meters
+  // 同心円 + 32方位（11.25°刻み）で最大 ~600m まで探索
+  const radii = [0,10,25,50,75,100,150,200,250,300,400,500,600]; // meters
   for (const r of radii){
-    const steps = 16; // 0..360°
+    const steps = 32; // 0..360° (11.25°刻み)
     for (let i=0;i<steps;i++){
-      const theta = (Math.PI * 2 * i) / steps; // ラジアン
+      const theta = (Math.PI * 2 * i) / steps;
       const dx = Math.cos(theta) * r;
       const dy = Math.sin(theta) * r;
       yield [dx, dy];
@@ -145,7 +145,7 @@ function metersToDegrees(lat, dx, dy){
 
 async function pingKey() {
   try {
-    const z = Math.max(0, Math.min(22, Math.round(map.getZoom() || 14)));
+    const z = Math.max(16, Math.min(22, Math.round(map.getZoom() || 17)));
     let lastErr = '';
     for (const [mx,my] of nearbyOffsetsMeters()){
       const [dlat, dlng] = metersToDegrees(START_POS[0], mx, my);
