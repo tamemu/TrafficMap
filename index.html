@@ -70,7 +70,7 @@
 <script>
 const TOMTOM_API_KEY = '95nUvWfM7ARBG60JdI3I37jG8N9yU9M4';
 const START_POS = [35.6812, 139.7671];
-const START_ZOOM = 12;
+const START_ZOOM = 15; // さらに命中率UPのため初期ズームを上げる
 
 const map = L.map('map', { zoomControl: true }).setView(START_POS, START_ZOOM);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -108,17 +108,56 @@ refreshTiles();
 applyInterval();
 pingKey();
 
+async function tryFlowAt(lat, lng, z){
+  const styles = ['absolute','relative0'];
+  for (const style of styles){
+    const url = new URL(`https://api.tomtom.com/traffic/services/4/flowSegmentData/${style}/${z}/json`);
+    url.searchParams.set('point', `${lat},${lng}`);
+    url.searchParams.set('key', TOMTOM_API_KEY);
+    const res = await fetch(url.toString());
+    const text = await res.text();
+    if (res.ok) return { ok:true, style, text };
+    if (res.status !== 400) return { ok:false, style, text, status:res.status };
+  }
+  return { ok:false, text:'400 Bad Request', status:400 };
+}
+
+function* nearbyOffsetsMeters(){
+  // 同心円 + 16方位（22.5°刻み）で最大 ~250m まで探索
+  const radii = [0,15,30,50,75,100,150,200,250]; // meters
+  for (const r of radii){
+    const steps = 16; // 0..360°
+    for (let i=0;i<steps;i++){
+      const theta = (Math.PI * 2 * i) / steps; // ラジアン
+      const dx = Math.cos(theta) * r;
+      const dy = Math.sin(theta) * r;
+      yield [dx, dy];
+    }
+  }
+}
+  }
+}
+function metersToDegrees(lat, dx, dy){
+  const latDeg = dy / 110540;
+  const lngDeg = dx / (111320 * Math.cos(lat * Math.PI/180));
+  return [latDeg, lngDeg];
+}
+
 async function pingKey() {
   try {
     const z = Math.max(0, Math.min(22, Math.round(map.getZoom() || 14)));
-    const testUrl = new URL(`https://api.tomtom.com/traffic/services/4/flowSegmentData/relative0/${z}/json`);
-    testUrl.searchParams.set('point', `${START_POS[0]},${START_POS[1]}`);
-    testUrl.searchParams.set('key', TOMTOM_API_KEY);
-    const res = await fetch(testUrl.toString());
-    const text = await res.text();
-    if (!res.ok) { setErr(`TomTom API ${res.status} — ${text}`); return; }
-    setErr('');
-  } catch (e) { setErr('ネットワークに到達できません。CORS/ネットワーク設定をご確認ください。'); }
+    let lastErr = '';
+    for (const [mx,my] of nearbyOffsetsMeters()){
+      const [dlat, dlng] = metersToDegrees(START_POS[0], mx, my);
+      const lat = START_POS[0] + dlat, lng = START_POS[1] + dlng;
+      const r = await tryFlowAt(lat, lng, z);
+      if (r.ok){ setErr(''); return; }
+      lastErr = `TomTom API ${r.status ?? 400} — ${r.text}`;
+    }
+    setErr(lastErr || 'TomTom API 400 — Point too far from nearest existing segment.');
+  } catch (e) {
+    setErr('ネットワークに到達できません。HTTPS で開いているか / CORS / ネットワーク設定をご確認ください。');
+  }
 }
 
 const locateOnceBtn = document.getElementById('locateOnceBtn');
@@ -153,34 +192,32 @@ followMeToggle.addEventListener('change', () => {
 let busy = false;
 map.on('click', async (e) => {
   if (busy) return; busy = true;
-  const { lat, lng } = e.latlng;
-  const z = Math.max(0, Math.min(22, Math.round(map.getZoom() || 14)));
-  let style = 'absolute';
-  let url = new URL(`https://api.tomtom.com/traffic/services/4/flowSegmentData/${style}/${z}/json`);
-  url.searchParams.set('point', `${lat},${lng}`);
-  url.searchParams.set('key', TOMTOM_API_KEY);
+  let { lat, lng } = e.latlng;
+  const z = Math.max(14, Math.min(22, Math.round(map.getZoom() || 16))); // 14以上を強制
   try {
-    let res = await fetch(url.toString());
-    let text = await res.text();
-    if (res.status === 400) { // フォールバック
-      style = 'relative0';
-      url = new URL(`https://api.tomtom.com/traffic/services/4/flowSegmentData/${style}/${z}/json`);
-      url.searchParams.set('point', `${lat},${lng}`);
-      url.searchParams.set('key', TOMTOM_API_KEY);
-      res = await fetch(url.toString());
-      text = await res.text();
+    let success = null, usedLat = lat, usedLng = lng, usedStyle = 'absolute', lastText = '';
+    for (const [mx,my] of nearbyOffsetsMeters()){
+      const [dlat, dlng] = metersToDegrees(lat, mx, my);
+      const r = await tryFlowAt(lat + dlat, lng + dlng, z);
+      if (r.ok){ success = r; usedLat = lat + dlat; usedLng = lng + dlng; usedStyle = r.style; break; }
+      lastText = r.text;
     }
-    if (!res.ok) throw new Error(`API ${res.status} — ${text}`);
-    const data = JSON.parse(text);
+    if (!success) throw new Error(`API 400 — ${lastText || 'Point too far from nearest existing segment.'}`);
+    const data = JSON.parse(success.text);
     const f = data && data.flowSegmentData;
     if (!f) throw new Error('No segment data');
-    const html = `<b>区間の交通状況</b><br>
+    const html = `<b>区間の交通状況</b> <small>(${usedStyle})</small><br>
       現在速度: <b>${f.currentSpeed} km/h</b><br>
       自由流速度: ${f.freeFlowSpeed} km/h<br>
       旅行時間(現在): ${Math.round(f.currentTravelTime)} 秒<br>
       旅行時間(自由流): ${Math.round(f.freeFlowTravelTime)} 秒<br>
       信頼度: ${(f.confidence*100).toFixed(0)}%`;
-    L.popup().setLatLng([lat, lng]).setContent(html).openOn(map);
+    L.popup().setLatLng([usedLat, usedLng]).setContent(html).openOn(map);
+  } catch (err) {
+    console.error(err);
+    L.popup().setLatLng([lat, lng]).setContent('データ取得失敗。道路上で試すか、ズームを上げてください。<br><small>'+String(err)+'</small>').openOn(map);
+  } finally { busy = false; }
+});setLatLng([usedLat, usedLng]).setContent(html).openOn(map);
   } catch (err) {
     console.error(err);
     L.popup().setLatLng([lat, lng]).setContent('データ取得失敗<br><small>'+String(err)+'</small>').openOn(map);
