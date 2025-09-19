@@ -27,7 +27,7 @@
   .status { font-size:12px; opacity:.9 }
   .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
   select, input[type="checkbox"] { cursor:pointer; }
-  .error { color:#ffb3b3; font-size:12px; margin-top:4px; display:none; max-width: 420px; }
+  .error { color:#ffb3b3; font-size:12px; margin-top:4px; display:none; max-width: 420px; white-space:pre-wrap; word-break:break-word; }
 </style>
 </head>
 <body>
@@ -68,9 +68,9 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
-const TOMTOM_API_KEY = '95nUvWfM7ARBG60JdI3I37jG8N9yU9M4';
+const TOMTOM_API_KEY = '95nUvWfM7ARBG60JdI3I37jG8N9yU9M4'; // ←実際のキーに差し替え（Traffic Flow Segment Data権限必須）
 const START_POS = [35.6812, 139.7671];
-const START_ZOOM = 15;
+const START_ZOOM = 16;
 
 const map = L.map('map', { zoomControl: true }).setView(START_POS, START_ZOOM);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -106,10 +106,12 @@ document.getElementById('refreshBtn').onclick = refreshTiles;
 refreshSelect.onchange = applyInterval;
 refreshTiles();
 applyInterval();
-pingKey();
+// pingKey(); // 権限有効化後に戻してください
 
 async function tryFlowAt(lat, lng, z){
+  // absolute / relative0 の両方を試行し、403/401でも次へ進む
   const styles = ['absolute','relative0'];
+  let last = { ok:false, status:0, text:'' };
   for (const style of styles){
     const url = new URL(`https://api.tomtom.com/traffic/services/4/flowSegmentData/${style}/${z}/json`);
     url.searchParams.set('point', `${lat},${lng}`);
@@ -117,13 +119,13 @@ async function tryFlowAt(lat, lng, z){
     const res = await fetch(url.toString());
     const text = await res.text();
     if (res.ok) return { ok:true, style, text };
-    if (res.status !== 400) return { ok:false, style, text, status:res.status };
+    last = { ok:false, style, status:res.status, text };
   }
-  return { ok:false, text:'400 Bad Request', status:400 };
+  return last;
 }
 
 function* nearbyOffsetsMeters(){
-  const radii = [0,15,30,50,75,100,150,200,250];
+  const radii = [0,15,30,50,75,100,150,200,250,400,600];
   for (const r of radii){
     const steps = 16;
     for (let i=0;i<steps;i++){
@@ -143,7 +145,7 @@ function metersToDegrees(lat, dx, dy){
 
 async function pingKey() {
   try {
-    const z = Math.max(0, Math.min(22, Math.round(map.getZoom() || 14)));
+    const z = Math.max(16, Math.min(22, Math.round(map.getZoom() || 17)));
     let lastErr = '';
     for (const [mx,my] of nearbyOffsetsMeters()){
       const [dlat, dlng] = metersToDegrees(START_POS[0], mx, my);
@@ -173,7 +175,7 @@ locateOnceBtn.onclick = () => {
   navigator.geolocation.getCurrentPosition(pos => {
     const { latitude, longitude, accuracy } = pos.coords;
     updateMe(latitude, longitude, accuracy);
-    map.setView([latitude, longitude], 14);
+    map.setView([latitude, longitude], 16);
   }, err => alert('現在地取得失敗: ' + err.message), { enableHighAccuracy:true, maximumAge:10000, timeout:10000 });
 };
 followMeToggle.addEventListener('change', () => {
@@ -182,7 +184,7 @@ followMeToggle.addEventListener('change', () => {
     watchId = navigator.geolocation.watchPosition(pos => {
       const { latitude, longitude, accuracy } = pos.coords;
       updateMe(latitude, longitude, accuracy);
-      map.setView([latitude, longitude], Math.max(map.getZoom(), 14));
+      map.setView([latitude, longitude], Math.max(map.getZoom(), 16));
     }, err => { alert('追従失敗: ' + err.message); followMeToggle.checked = false; }, { enableHighAccuracy:true, maximumAge:8000, timeout:10000 });
   } else { if (watchId !== null) { navigator.geolocation.clearWatch(watchId); watchId = null; } }
 });
@@ -191,7 +193,7 @@ let busy = false;
 map.on('click', async (e) => {
   if (busy) return; busy = true;
   let { lat, lng } = e.latlng;
-  const z = Math.max(14, Math.min(22, Math.round(map.getZoom() || 16)));
+  const z = Math.max(16, Math.min(22, Math.round(map.getZoom() || 17)));
   try {
     let success = null, usedLat = lat, usedLng = lng, usedStyle = 'absolute', lastText = '';
     for (const [mx,my] of nearbyOffsetsMeters()){
@@ -200,7 +202,7 @@ map.on('click', async (e) => {
       if (r.ok){ success = r; usedLat = lat + dlat; usedLng = lng + dlng; usedStyle = r.style; break; }
       lastText = r.text;
     }
-    if (!success) throw new Error(`API 400 — ${lastText || 'Point too far from nearest existing segment.'}`);
+    if (!success) throw new Error(`API 400/403 — ${lastText || 'Point too far or forbidden (権限不足)'} `);
     const data = JSON.parse(success.text);
     const f = data && data.flowSegmentData;
     if (!f) throw new Error('No segment data');
