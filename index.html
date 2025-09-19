@@ -193,19 +193,23 @@ let busy = false;
 map.on('click', async (e) => {
   if (busy) return; busy = true;
   let { lat, lng } = e.latlng;
-  const z = Math.max(14, Math.min(22, Math.round(map.getZoom() || 16))); // 14以上を強制
+  const z = Math.max(14, Math.min(22, Math.round(map.getZoom() || 16)));
+
   try {
     let success = null, usedLat = lat, usedLng = lng, usedStyle = 'absolute', lastText = '';
-    for (const [mx,my] of nearbyOffsetsMeters()){
+    for (const [mx,my] of nearbyOffsetsMeters()) {
       const [dlat, dlng] = metersToDegrees(lat, mx, my);
       const r = await tryFlowAt(lat + dlat, lng + dlng, z);
-      if (r.ok){ success = r; usedLat = lat + dlat; usedLng = lng + dlng; usedStyle = r.style; break; }
+      if (r.ok) { success = r; usedLat = lat + dlat; usedLng = lng + dlng; usedStyle = r.style; break; }
       lastText = r.text;
     }
+
     if (!success) throw new Error(`API 400 — ${lastText || 'Point too far from nearest existing segment.'}`);
+
     const data = JSON.parse(success.text);
     const f = data && data.flowSegmentData;
     if (!f) throw new Error('No segment data');
+
     const html = `<b>区間の交通状況</b> <small>(${usedStyle})</small><br>
       現在速度: <b>${f.currentSpeed} km/h</b><br>
       自由流速度: ${f.freeFlowSpeed} km/h<br>
@@ -215,14 +219,14 @@ map.on('click', async (e) => {
     L.popup().setLatLng([usedLat, usedLng]).setContent(html).openOn(map);
   } catch (err) {
     console.error(err);
-    L.popup().setLatLng([lat, lng]).setContent('データ取得失敗。道路上で試すか、ズームを上げてください。<br><small>'+String(err)+'</small>').openOn(map);
-  } finally { busy = false; }
-});setLatLng([usedLat, usedLng]).setContent(html).openOn(map);
-  } catch (err) {
-    console.error(err);
-    L.popup().setLatLng([lat, lng]).setContent('データ取得失敗<br><small>'+String(err)+'</small>').openOn(map);
-  } finally { busy = false; }
-});
+    L.popup().setLatLng([lat, lng]).setContent(
+      'データ取得失敗。道路上で試すか、ズームを上げてください。<br><small>'+String(err)+'</small>'
+    ).openOn(map);
+  } finally {
+    busy = false;
+  }
+});   // ← ここで終わり。余計な } が下に無いこと！
+
 </script>
 </body>
 </html>
