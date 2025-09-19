@@ -68,9 +68,9 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
-const TOMTOM_API_KEY = '95nUvWfM7ARBG60JdI3I37jG8N9yU9M4';
+const TOMTOM_API_KEY = 'YOUR_TOMTOM_API_KEY';
 const START_POS = [35.6812, 139.7671];
-const START_ZOOM = 16; // さらに命中率UPのため初期ズームを上げる
+const START_ZOOM = 15;
 
 const map = L.map('map', { zoomControl: true }).setView(START_POS, START_ZOOM);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -123,10 +123,9 @@ async function tryFlowAt(lat, lng, z){
 }
 
 function* nearbyOffsetsMeters(){
-  // 同心円 + 32方位（11.25°刻み）で最大 ~600m まで探索
-  const radii = [0,10,25,50,75,100,150,200,250,300,400,500,600]; // meters
+  const radii = [0,15,30,50,75,100,150,200,250];
   for (const r of radii){
-    const steps = 32; // 0..360° (11.25°刻み)
+    const steps = 16;
     for (let i=0;i<steps;i++){
       const theta = (Math.PI * 2 * i) / steps;
       const dx = Math.cos(theta) * r;
@@ -135,7 +134,6 @@ function* nearbyOffsetsMeters(){
     }
   }
 }
-  
 
 function metersToDegrees(lat, dx, dy){
   const latDeg = dy / 110540;
@@ -145,7 +143,7 @@ function metersToDegrees(lat, dx, dy){
 
 async function pingKey() {
   try {
-    const z = Math.max(16, Math.min(22, Math.round(map.getZoom() || 17)));
+    const z = Math.max(0, Math.min(22, Math.round(map.getZoom() || 14)));
     let lastErr = '';
     for (const [mx,my] of nearbyOffsetsMeters()){
       const [dlat, dlng] = metersToDegrees(START_POS[0], mx, my);
@@ -194,22 +192,18 @@ map.on('click', async (e) => {
   if (busy) return; busy = true;
   let { lat, lng } = e.latlng;
   const z = Math.max(14, Math.min(22, Math.round(map.getZoom() || 16)));
-
   try {
     let success = null, usedLat = lat, usedLng = lng, usedStyle = 'absolute', lastText = '';
-    for (const [mx,my] of nearbyOffsetsMeters()) {
+    for (const [mx,my] of nearbyOffsetsMeters()){
       const [dlat, dlng] = metersToDegrees(lat, mx, my);
       const r = await tryFlowAt(lat + dlat, lng + dlng, z);
-      if (r.ok) { success = r; usedLat = lat + dlat; usedLng = lng + dlng; usedStyle = r.style; break; }
+      if (r.ok){ success = r; usedLat = lat + dlat; usedLng = lng + dlng; usedStyle = r.style; break; }
       lastText = r.text;
     }
-
     if (!success) throw new Error(`API 400 — ${lastText || 'Point too far from nearest existing segment.'}`);
-
     const data = JSON.parse(success.text);
     const f = data && data.flowSegmentData;
     if (!f) throw new Error('No segment data');
-
     const html = `<b>区間の交通状況</b> <small>(${usedStyle})</small><br>
       現在速度: <b>${f.currentSpeed} km/h</b><br>
       自由流速度: ${f.freeFlowSpeed} km/h<br>
@@ -219,14 +213,9 @@ map.on('click', async (e) => {
     L.popup().setLatLng([usedLat, usedLng]).setContent(html).openOn(map);
   } catch (err) {
     console.error(err);
-    L.popup().setLatLng([lat, lng]).setContent(
-      'データ取得失敗。道路上で試すか、ズームを上げてください。<br><small>'+String(err)+'</small>'
-    ).openOn(map);
-  } finally {
-    busy = false;
-  }
-});   // ← ここで終わり。余計な } が下に無いこと！
-
+    L.popup().setLatLng([lat, lng]).setContent('データ取得失敗。道路上で試すか、ズームを上げてください。<br><small>'+String(err)+'</small>').openOn(map);
+  } finally { busy = false; }
+});
 </script>
 </body>
 </html>
